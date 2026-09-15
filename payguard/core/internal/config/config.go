@@ -1,0 +1,33 @@
+package config
+
+import (
+	"encoding/json"
+	"os"
+)
+
+type Config struct {
+	AppName  string `json:"app_name"`
+	Version  string `json:"version"`
+	Database struct {
+		Host     string `json:"host"`
+		User     string `json:"user"`
+		Password string `json:"password"`
+		Name     string `json:"name"`
+		Port     int    `json:"port"`
+	} `json:"database"`
+}
+
+func Load(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var cfg Config
+	err = json.Unmarshal(data, &cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &cfg, nil
+}
