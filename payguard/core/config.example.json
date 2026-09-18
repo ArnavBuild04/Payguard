@@ -8,5 +8,9 @@
     "password": "payguard",
     "name": "payguard",
     "port": 5432
+  },
+  "provider": {
+    "base_url": "http://localhost:9090",
+    "timeout_ms": 5000
   }
 }

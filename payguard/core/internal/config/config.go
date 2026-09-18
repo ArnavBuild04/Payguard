@@ -16,6 +16,10 @@ type Config struct {
 		Name     string `json:"name"`
 		Port     int    `json:"port"`
 	} `json:"database"`
+	Provider struct {
+		BaseURL   string `json:"base_url"`
+		TimeoutMS int    `json:"timeout_ms"`
+	} `json:"provider"`
 }
 
 func Load(path string) (*Config, error) {
