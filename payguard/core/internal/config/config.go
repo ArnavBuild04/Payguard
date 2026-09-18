@@ -20,6 +20,10 @@ type Config struct {
 		BaseURL   string `json:"base_url"`
 		TimeoutMS int    `json:"timeout_ms"`
 	} `json:"provider"`
+	Coordinator struct {
+		AssetServiceURL  string `json:"asset_service_url"`
+		TicketServiceURL string `json:"ticket_service_url"`
+	} `json:"coordinator"`
 }
 
 func Load(path string) (*Config, error) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,7 +14,13 @@ import (
 	"syscall"
 	"time"
 
+	coordinatorgranter "github.com/ArnavBuild04/payguard/core/internal/coordinator/granter"
+	coordinatormodels "github.com/ArnavBuild04/payguard/core/internal/coordinator/models"
+	coordinatorrepo "github.com/ArnavBuild04/payguard/core/internal/coordinator/repo"
+	coordinatorservice "github.com/ArnavBuild04/payguard/core/internal/coordinator/service"
+
 	"github.com/ArnavBuild04/payguard/core/internal/config"
+	"github.com/ArnavBuild04/payguard/core/internal/outbox"
 	outboxmodels "github.com/ArnavBuild04/payguard/core/internal/outbox/models"
 	paymenthttpapi "github.com/ArnavBuild04/payguard/core/internal/payment/httpapi"
 	paymentmodels "github.com/ArnavBuild04/payguard/core/internal/payment/models"
@@ -52,6 +59,7 @@ func main() {
 		&models.Account{}, &models.LedgerEntry{},
 		&paymentmodels.Payment{}, &paymentmodels.PaymentEvent{},
 		&outboxmodels.Event{},
+		&coordinatormodels.Transaction{},
 	); err != nil {
 		log.Fatalf("failed to auto-migrate models: %v", err)
 	}
@@ -60,6 +68,14 @@ func main() {
 
 	providerClient := provider.NewHTTPProvider(cfg.Provider.BaseURL, &http.Client{Timeout: providerTimeout(cfg)})
 	paymentSvc := paymentservice.NewService(paymentrepo.NewRepo(db), providerClient)
+
+	assetGranter := coordinatorgranter.NewHTTPAssetGranter(cfg.Coordinator.AssetServiceURL, &http.Client{Timeout: 5 * time.Second})
+	ticketGranter := coordinatorgranter.NewHTTPTicketGranter(cfg.Coordinator.TicketServiceURL, &http.Client{Timeout: 5 * time.Second})
+	coordinatorSvc := coordinatorservice.NewService(coordinatorrepo.NewRepo(db), svc, assetGranter, ticketGranter)
+
+	relayCtx, stopRelay := context.WithCancel(context.Background())
+	defer stopRelay()
+	go outbox.RunRelay(relayCtx, db, paymentSucceededHandler(coordinatorSvc), 2*time.Second)
 
 	mux := http.NewServeMux()
 	httpapi.RegisterRoutes(mux, svc)
@@ -117,4 +133,29 @@ func providerTimeout(cfg *config.Config) time.Duration {
 		return time.Duration(cfg.Provider.TimeoutMS) * time.Millisecond
 	}
 	return 5 * time.Second
+}
+
+// paymentSucceededHandler is the outbox relay's dispatch function — the in-process stand-in for
+// Kafka's payment.events topic in this phase (PLAN.md Phase B1). It decodes the event generically
+// rather than importing payment's own payload type, so outbox and coordinator never need to know
+// about payment's internals — only main.go glues the three together.
+func paymentSucceededHandler(coordinatorSvc coordinatorservice.Service) outbox.Handler {
+	return func(ctx context.Context, ev outboxmodels.Event) error {
+		if ev.EventType != "PAYMENT_SUCCEEDED" {
+			return nil
+		}
+
+		var payload struct {
+			PaymentID   uint64 `json:"payment_id"`
+			TenantID    string `json:"tenant_id"`
+			UserID      int64  `json:"user_id"`
+			SKU         string `json:"sku"`
+			AmountMinor int64  `json:"amount_minor"`
+		}
+		if err := json.Unmarshal([]byte(ev.PayloadJSON), &payload); err != nil {
+			return fmt.Errorf("decode PAYMENT_SUCCEEDED payload: %w", err)
+		}
+
+		return coordinatorSvc.HandlePaymentSucceeded(ctx, payload.PaymentID, payload.TenantID, payload.UserID, payload.SKU, payload.AmountMinor)
+	}
 }

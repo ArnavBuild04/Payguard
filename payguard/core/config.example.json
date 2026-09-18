@@ -12,5 +12,9 @@
   "provider": {
     "base_url": "http://localhost:9090",
     "timeout_ms": 5000
+  },
+  "coordinator": {
+    "asset_service_url": "http://localhost:9100",
+    "ticket_service_url": "http://localhost:9101"
   }
 }
