@@ -8,6 +8,7 @@ import (
 type Config struct {
 	AppName  string `json:"app_name"`
 	Version  string `json:"version"`
+	HTTPPort int    `json:"http_port"`
 	Database struct {
 		Host     string `json:"host"`
 		User     string `json:"user"`

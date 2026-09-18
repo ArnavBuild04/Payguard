@@ -1,36 +1,37 @@
 package service
 
 import (
+	"context"
+
 	"github.com/ArnavBuild04/payguard/core/internal/wallet/models"
 	"github.com/ArnavBuild04/payguard/core/internal/wallet/repo"
+	"github.com/ArnavBuild04/payguard/core/internal/wallet/walleterr"
 )
 
-
-type serviceImpl struct{
-    Db repo.Repo
+type serviceImpl struct {
+	Db repo.Repo
 }
-
 
 func NewService(repo repo.Repo) Service {
 	return &serviceImpl{
-		 Db: repo,
+		Db: repo,
 	}
 }
 
-func (s *serviceImpl) Debit(tenantID string, userID string, amount int64, source models.Source, referenceID string) error {
-	
-	err := s.Db.Debit(tenantID, userID, amount, source, referenceID)
-	if err != nil {
-		return err
+func (s *serviceImpl) Debit(ctx context.Context, tenantID string, userID int64, amount int64, source models.Source, referenceID string) error {
+	if amount <= 0 {
+		return walleterr.ErrInvalidAmount
 	}
-	return nil
+	return s.Db.Debit(ctx, tenantID, userID, amount, source, referenceID)
 }
 
-func (s *serviceImpl) Credit(tenantID string, userID string, amount int64, source models.Source, referenceID string) error {
-	
-	err := s.Db.Credit(tenantID, userID, amount, source, referenceID)
-	if err != nil {
-		return err
+func (s *serviceImpl) Credit(ctx context.Context, tenantID string, userID int64, amount int64, source models.Source, referenceID string) error {
+	if amount <= 0 {
+		return walleterr.ErrInvalidAmount
 	}
-	return nil
+	return s.Db.Credit(ctx, tenantID, userID, amount, source, referenceID)
+}
+
+func (s *serviceImpl) GetAccount(ctx context.Context, tenantID string, userID int64) (*models.Account, error) {
+	return s.Db.GetAccount(ctx, tenantID, userID)
 }

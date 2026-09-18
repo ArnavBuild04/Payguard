@@ -1,0 +1,12 @@
+{
+  "app_name": "payguard-core",
+  "version": "0.1.0",
+  "http_port": 8080,
+  "database": {
+    "host": "localhost",
+    "user": "payguard",
+    "password": "payguard",
+    "name": "payguard",
+    "port": 5432
+  }
+}
