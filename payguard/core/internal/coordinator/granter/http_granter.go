@@ -8,9 +8,7 @@ import (
 	"net/http"
 )
 
-// httpGranter is the one implementation behind both NewHTTPAssetGranter and NewHTTPTicketGranter —
-// asset and ticket grants are identical shape today ("stubs for now, real interface"); resource is
-// the only thing that differs, and it becomes the wire path (/v1/{resource}/grant).
+// httpGranter is the one implementation behind both NewHTTPAssetGranter and NewHTTPTicketGranter.
 type httpGranter struct {
 	baseURL  string
 	resource string

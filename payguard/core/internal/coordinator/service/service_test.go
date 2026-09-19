@@ -54,7 +54,7 @@ func freshOrderID(t *testing.T) uint64 {
 
 func newService(db *gorm.DB, ticketGranter granter.TicketGranter) (service.Service, walletsvc.Service) {
 	wallet := walletsvc.NewService(walletrepo.NewRepo(db))
-	assetGranter := granter.NewFake()
+	assetGranter := granter.NewInMemoryGranter()
 	svc := service.NewService(coordinatorrepo.NewRepo(db), wallet, assetGranter, ticketGranter)
 	return svc, wallet
 }
@@ -65,7 +65,7 @@ func TestHandlePaymentSucceeded_BundleTicket_AllGrantsLand(t *testing.T) {
 	orderID := freshOrderID(t)
 	tenant := fmt.Sprintf("tenant-%d", orderID)
 
-	ticketGranter := granter.NewFake()
+	ticketGranter := granter.NewInMemoryGranter()
 	svc, wallet := newService(db, ticketGranter)
 
 	if err := svc.HandlePaymentSucceeded(ctx, orderID, tenant, 42, "BUNDLE_TICKET", 999); err != nil {
@@ -84,15 +84,14 @@ func TestHandlePaymentSucceeded_BundleTicket_AllGrantsLand(t *testing.T) {
 	}
 }
 
-// TestHandlePaymentSucceeded_PartialBundle_ChipsLandTicketDoesNot is hld.md §6.3: stopping one
-// grant service must not touch the other grant.
+// TestHandlePaymentSucceeded_PartialBundle_ChipsLandTicketDoesNot asserts one grant failing doesn't touch the other.
 func TestHandlePaymentSucceeded_PartialBundle_ChipsLandTicketDoesNot(t *testing.T) {
 	db := getDB(t)
 	ctx := context.Background()
 	orderID := freshOrderID(t)
 	tenant := fmt.Sprintf("tenant-%d", orderID)
 
-	ticketGranter := granter.NewFake()
+	ticketGranter := granter.NewInMemoryGranter()
 	ticketGranter.GrantErr = errors.New("ticket service down")
 	svc, wallet := newService(db, ticketGranter)
 
@@ -113,15 +112,14 @@ func TestHandlePaymentSucceeded_PartialBundle_ChipsLandTicketDoesNot(t *testing.
 	}
 }
 
-// TestHandlePaymentSucceeded_Redelivery_DoesNotDoubleCredit is the at-least-once safety net
-// (hld.md edge case E2/F1): a redelivered PAYMENT_SUCCEEDED event must not double-grant.
+// TestHandlePaymentSucceeded_Redelivery_DoesNotDoubleCredit asserts a redelivery does not double-grant.
 func TestHandlePaymentSucceeded_Redelivery_DoesNotDoubleCredit(t *testing.T) {
 	db := getDB(t)
 	ctx := context.Background()
 	orderID := freshOrderID(t)
 	tenant := fmt.Sprintf("tenant-%d", orderID)
 
-	ticketGranter := granter.NewFake()
+	ticketGranter := granter.NewInMemoryGranter()
 	svc, wallet := newService(db, ticketGranter)
 
 	if err := svc.HandlePaymentSucceeded(ctx, orderID, tenant, 42, "BUNDLE_10K", 999); err != nil {
@@ -140,15 +138,14 @@ func TestHandlePaymentSucceeded_Redelivery_DoesNotDoubleCredit(t *testing.T) {
 	}
 }
 
-// TestCompensate_ReversesEverySuccessGrant is hld.md §5.6: a refund walks every SUCCESS
-// transaction for the order back to REVERSED, debiting chips and revoking the ticket.
+// TestCompensate_ReversesEverySuccessGrant asserts a refund reverses every SUCCESS grant.
 func TestCompensate_ReversesEverySuccessGrant(t *testing.T) {
 	db := getDB(t)
 	ctx := context.Background()
 	orderID := freshOrderID(t)
 	tenant := fmt.Sprintf("tenant-%d", orderID)
 
-	ticketGranter := granter.NewFake()
+	ticketGranter := granter.NewInMemoryGranter()
 	svc, wallet := newService(db, ticketGranter)
 
 	if err := svc.HandlePaymentSucceeded(ctx, orderID, tenant, 42, "BUNDLE_TICKET", 999); err != nil {
@@ -171,16 +168,14 @@ func TestCompensate_ReversesEverySuccessGrant(t *testing.T) {
 	}
 }
 
-// TestCompensate_ClawbackShortfall_LeavesRowUnreversed is hld.md §5.6/F7: if the player already
-// spent the chips, the debit must fail on insufficient balance rather than go negative, and the
-// transaction row stays REVERSE_PENDING for a human — it is not silently marked REVERSED.
+// TestCompensate_ClawbackShortfall_LeavesRowUnreversed asserts an already-spent balance never goes negative.
 func TestCompensate_ClawbackShortfall_LeavesRowUnreversed(t *testing.T) {
 	db := getDB(t)
 	ctx := context.Background()
 	orderID := freshOrderID(t)
 	tenant := fmt.Sprintf("tenant-%d", orderID)
 
-	ticketGranter := granter.NewFake()
+	ticketGranter := granter.NewInMemoryGranter()
 	svc, wallet := newService(db, ticketGranter)
 
 	if err := svc.HandlePaymentSucceeded(ctx, orderID, tenant, 42, "BUNDLE_10K", 999); err != nil {

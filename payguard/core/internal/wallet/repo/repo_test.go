@@ -17,9 +17,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// Matches docker-compose.yml. Overridable isn't needed for a local speed-run
-// suite, but if this ever needs to run in CI against a different host, this
-// is the one line to change.
+// Matches docker-compose.yml.
 const testDSN = "host=localhost user=payguard password=payguard dbname=payguard port=5432 sslmode=disable TimeZone=UTC"
 
 var (

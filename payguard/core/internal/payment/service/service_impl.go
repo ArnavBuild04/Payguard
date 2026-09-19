@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
+	"github.com/ArnavBuild04/payguard/core/internal/cache"
 	"github.com/ArnavBuild04/payguard/core/internal/payment/models"
 	"github.com/ArnavBuild04/payguard/core/internal/payment/paymenterr"
 	"github.com/ArnavBuild04/payguard/core/internal/payment/repo"
@@ -13,13 +16,18 @@ import (
 	"github.com/ArnavBuild04/payguard/core/internal/provider/providererr"
 )
 
+// paymentCacheTTL is short; nothing that mutates money reads from this cache.
+const paymentCacheTTL = 2 * time.Second
+
 type serviceImpl struct {
-	repo     repo.Repo
-	provider provider.Provider
+	repo       repo.Repo
+	provider   provider.Provider
+	webhookURL string
+	cache      *cache.Client
 }
 
-func NewService(r repo.Repo, p provider.Provider) Service {
-	return &serviceImpl{repo: r, provider: p}
+func NewService(r repo.Repo, p provider.Provider, webhookURL string, paymentCache *cache.Client) Service {
+	return &serviceImpl{repo: r, provider: p, webhookURL: webhookURL, cache: paymentCache}
 }
 
 func (s *serviceImpl) CreatePayment(ctx context.Context, tenantID string, userID int64, sku, idempotencyKey string) (*models.Payment, error) {
@@ -44,33 +52,43 @@ func (s *serviceImpl) CreatePayment(ctx context.Context, tenantID string, userID
 
 	created, err := s.repo.Create(ctx, p)
 	if err != nil {
-		// ErrAlreadyProcessed still carries the original row — the client gets it back, just not a
-		// new charge. Everything else (ErrFingerprintMismatch, a genuine DB error) is a real error.
 		return created, err
 	}
 
-	// The client never waits on this — see hld.md §5.1: the response is 202 before the provider is
-	// ever called. A detached context because the request's own context may be cancelled the
-	// moment the HTTP handler returns.
+	// The client never waits on the provider call; the response is 202 before this runs.
 	go s.confirmWithProvider(context.Background(), created)
 
 	return created, nil
 }
 
 func (s *serviceImpl) GetPayment(ctx context.Context, id uint64) (*models.Payment, error) {
-	return s.repo.GetByID(ctx, id)
+	if cached, ok := s.cache.GetPaymentJSON(ctx, id); ok {
+		var p models.Payment
+		if err := json.Unmarshal([]byte(cached), &p); err == nil {
+			return &p, nil
+		}
+		// A corrupt cache entry is just a miss — fall through to the database.
+	}
+
+	p, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if body, err := json.Marshal(p); err == nil {
+		s.cache.SetPaymentJSON(ctx, id, string(body), paymentCacheTTL)
+	}
+	return p, nil
 }
 
-// confirmWithProvider makes the one synchronous-from-our-side call to the provider and applies
-// whatever it honestly says. A timeout or unrecognized status leaves the payment PROCESSING and
-// only records that we tried — hld.md's single most important rule: PROCESSING → FAILED happens
-// only on an authoritative provider failure.
+// confirmWithProvider never marks FAILED on ambiguity; only an authoritative provider failure does.
 func (s *serviceImpl) confirmWithProvider(ctx context.Context, p *models.Payment) {
 	providerIdemKey := fmt.Sprintf("payguard_pay_%d", p.ID)
 	result, err := s.provider.CreatePayment(ctx, provider.CreateRequest{
 		IdempotencyKey: providerIdemKey,
 		AmountMinor:    p.AmountMinor,
 		Currency:       p.Currency,
+		WebhookURL:     s.webhookURL,
 	})
 	if err != nil {
 		if incErr := s.repo.IncrementAttempt(ctx, p.ID); incErr != nil {
@@ -90,17 +108,82 @@ func (s *serviceImpl) confirmWithProvider(ctx context.Context, p *models.Payment
 	case provider.StatusFailed:
 		s.applyTransition(ctx, p.ID, models.StatusFailed, result.ID, result.RawStatus)
 	default:
-		// Still processing (or a non-terminal status we don't otherwise act on) — attach the
-		// reference so a later poll or retry can find this payment at the provider, but do not
-		// change status: nothing terminal has happened yet.
+		// Still processing; attach the reference without changing status.
 		if err := s.repo.SetProviderRef(ctx, p.ID, result.ID, result.RawStatus); err != nil && !errors.Is(err, paymenterr.ErrAlreadyProcessed) {
 			slog.Error("payment: failed to set provider ref", "payment_id", p.ID, "err", err)
 		}
+		s.cache.InvalidatePayment(ctx, p.ID)
 	}
+}
+
+// webhookTransitions maps a provider event type to the status it asks us to move to.
+var webhookTransitions = map[string]models.Status{
+	"payment.succeeded": models.StatusSucceeded,
+	"payment.failed":    models.StatusFailed,
+	"payment.refunded":  models.StatusRefundPending,
+}
+
+func (s *serviceImpl) HandleWebhook(ctx context.Context, source, eventID, eventType, providerPaymentID, rawStatus, payloadJSON string) error {
+	payment, err := s.repo.GetByProviderPaymentID(ctx, providerPaymentID)
+	if err != nil {
+		if errors.Is(err, paymenterr.ErrPaymentNotFound) {
+			// Logged loudly rather than silently dropped; there is no unmatched_webhooks table yet.
+			slog.Error("payment: webhook for unknown provider payment id", "provider_payment_id", providerPaymentID, "event_type", eventType)
+			return nil
+		}
+		return fmt.Errorf("payment: look up webhook target: %w", err)
+	}
+
+	recordErr := s.repo.RecordEvent(ctx, &models.PaymentEvent{
+		PaymentID:   payment.ID,
+		Source:      source,
+		EventID:     eventID,
+		EventType:   eventType,
+		PayloadJSON: payloadJSON,
+	})
+	if recordErr != nil {
+		if errors.Is(recordErr, paymenterr.ErrAlreadyProcessed) {
+			// Duplicate delivery, no-op.
+			slog.Info("payment: webhook replayed", "payment_id", payment.ID, "event_id", eventID)
+			return nil
+		}
+		return fmt.Errorf("payment: record webhook event: %w", recordErr)
+	}
+
+	to, known := webhookTransitions[eventType]
+	if !known {
+		slog.Info("payment: webhook event type not acted on", "payment_id", payment.ID, "event_type", eventType)
+		return nil
+	}
+
+	_, tErr := s.repo.Transition(ctx, payment.ID, to, providerPaymentID, rawStatus)
+	s.cache.InvalidatePayment(ctx, payment.ID)
+	switch {
+	case tErr == nil:
+		slog.Info("payment: transitioned via webhook", "payment_id", payment.ID, "to", to)
+		return nil
+	case errors.Is(tErr, paymenterr.ErrInvalidTransition):
+		// Out-of-order or already applied via polling, safe no-op.
+		slog.Info("payment: webhook transition rejected as out-of-order", "payment_id", payment.ID, "to", to)
+		return nil
+	default:
+		return fmt.Errorf("payment: apply webhook transition: %w", tErr)
+	}
+}
+
+func (s *serviceImpl) MarkRefunded(ctx context.Context, id uint64) error {
+	_, err := s.repo.Transition(ctx, id, models.StatusRefunded, "", "")
+	s.cache.InvalidatePayment(ctx, id)
+	if errors.Is(err, paymenterr.ErrInvalidTransition) {
+		// Already REFUNDED (redelivered dispatch) — safe no-op.
+		return nil
+	}
+	return err
 }
 
 func (s *serviceImpl) applyTransition(ctx context.Context, id uint64, to models.Status, providerPaymentID, providerRawStatus string) {
 	_, err := s.repo.Transition(ctx, id, to, providerPaymentID, providerRawStatus)
+	s.cache.InvalidatePayment(ctx, id)
 	switch {
 	case err == nil:
 		slog.Info("payment: transitioned", "payment_id", id, "to", to)

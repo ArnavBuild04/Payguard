@@ -11,18 +11,23 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Handler dispatches one outbox event. A non-nil error leaves the row unpublished for the next
-// poll — at-least-once, matching hld.md edge case D2 (a crash before marking published_at just
-// means a harmless redelivery, absorbed by the consumer's own idempotency).
+// Handler dispatches one outbox event; a non-nil error leaves the row unpublished for the next poll.
 type Handler func(ctx context.Context, event models.Event) error
 
-const relayBatchSize = 20
+// Locker is an optional leader lock for the sweep; a nil Locker just means every instance sweeps every tick.
+type Locker interface {
+	TryLock(ctx context.Context, key string, ttl time.Duration) bool
+	Unlock(ctx context.Context, key string)
+}
 
-// RunRelay drains the outbox until ctx is cancelled — the in-process stand-in for Kafka in this
-// phase (PLAN.md Phase B1). SELECT ... FOR UPDATE SKIP LOCKED means it is already safe to run more
-// than one instance (hld.md edge case D4): a row another instance is holding is just skipped, not
-// blocked on.
-func RunRelay(ctx context.Context, db *gorm.DB, handler Handler, pollInterval time.Duration) {
+const (
+	relayBatchSize = 20
+	relayLockKey   = "outbox-relay-sweep"
+	relayLockTTL   = 10 * time.Second
+)
+
+// RunRelay drains the outbox until ctx is cancelled; safe to run more than one instance.
+func RunRelay(ctx context.Context, db *gorm.DB, locker Locker, handler Handler, pollInterval time.Duration) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
@@ -31,9 +36,19 @@ func RunRelay(ctx context.Context, db *gorm.DB, handler Handler, pollInterval ti
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			drainUntilEmpty(ctx, db, handler)
+			sweepOnce(ctx, db, locker, handler)
 		}
 	}
+}
+
+func sweepOnce(ctx context.Context, db *gorm.DB, locker Locker, handler Handler) {
+	if locker != nil {
+		if !locker.TryLock(ctx, relayLockKey, relayLockTTL) {
+			return // another instance already has the sweep this tick
+		}
+		defer locker.Unlock(ctx, relayLockKey)
+	}
+	drainUntilEmpty(ctx, db, handler)
 }
 
 func drainUntilEmpty(ctx context.Context, db *gorm.DB, handler Handler) {

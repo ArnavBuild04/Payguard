@@ -10,8 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// isRetryable matches 40001 only; under READ COMMITTED a single-row FOR UPDATE just blocks and
-// re-reads instead of erroring, so this mainly guards future multi-row transactions (Phase B).
+// isRetryable matches 40001 only, a serialization failure.
 func isRetryable(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {

@@ -153,8 +153,7 @@ func TestTransition_HappyPath_ProcessingToSucceeded(t *testing.T) {
 	}
 }
 
-// TestTransition_RejectsIllegalMove is the CanTransition guard proving a duplicate/out-of-order
-// webhook (e.g. a second "succeeded" delivered after we're already SUCCEEDED) is a safe no-op.
+// TestTransition_RejectsIllegalMove asserts a duplicate/out-of-order webhook is a safe no-op.
 func TestTransition_RejectsIllegalMove(t *testing.T) {
 	r := getRepo(t)
 	ctx := context.Background()
@@ -193,8 +192,7 @@ func TestTransition_NeverToFailedFromProcessingOnRetry(t *testing.T) {
 		t.Fatalf("create failed: %v", err)
 	}
 
-	// A timeout/ambiguous outcome never calls Transition at all in the real service — this test
-	// just confirms the payment is still sitting exactly where Create left it: PROCESSING.
+	// Confirms the payment is still sitting exactly where Create left it.
 	got, err := r.GetByID(ctx, p.ID)
 	if err != nil {
 		t.Fatalf("get failed: %v", err)
@@ -238,8 +236,7 @@ func TestRecordEvent_DuplicateDelivery_IsIgnored(t *testing.T) {
 	}
 }
 
-// TestConcurrentCreate_SameIdempotencyKey fires the SAME create from 50 goroutines; exactly one
-// must win the insert and every other goroutine must get back that same payment row.
+// TestConcurrentCreate_SameIdempotencyKey asserts exactly one of 50 concurrent creates wins.
 func TestConcurrentCreate_SameIdempotencyKey(t *testing.T) {
 	r := getRepo(t)
 	ctx := context.Background()

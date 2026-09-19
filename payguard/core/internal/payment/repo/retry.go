@@ -10,8 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// isRetryable matches 40001 only — a genuine serialization failure under concurrent writers, not a
-// unique violation (23505 is a definitive answer, translated to a sentinel, never retried).
+// isRetryable matches 40001 only, a serialization failure; 23505 is never retried.
 func isRetryable(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {

@@ -24,6 +24,12 @@ type Config struct {
 		AssetServiceURL  string `json:"asset_service_url"`
 		TicketServiceURL string `json:"ticket_service_url"`
 	} `json:"coordinator"`
+	Kafka struct {
+		Brokers []string `json:"brokers"`
+	} `json:"kafka"`
+	Redis struct {
+		Addr string `json:"addr"`
+	} `json:"redis"`
 }
 
 func Load(path string) (*Config, error) {

@@ -16,5 +16,11 @@
   "coordinator": {
     "asset_service_url": "http://localhost:9100",
     "ticket_service_url": "http://localhost:9101"
+  },
+  "kafka": {
+    "brokers": ["localhost:9092"]
+  },
+  "redis": {
+    "addr": "localhost:6379"
   }
 }

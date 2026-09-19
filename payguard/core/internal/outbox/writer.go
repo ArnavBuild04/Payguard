@@ -1,8 +1,4 @@
-// Package outbox is deliberately just a writer today. Write is called from inside another
-// package's own transaction (payment, later coordinator) so the event row commits atomically with
-// the state change it represents — this is what makes the dual-write problem structurally
-// impossible, not just unlikely (PLAN.md Phase B1). The relay that drains these rows (in-process for
-// now, Kafka in Phase B2) is a later addition; nothing here assumes it exists yet.
+// Package outbox writes the transactional outbox row.
 package outbox
 
 import (
@@ -13,9 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// Write inserts an outbox row using tx — the caller's own open transaction, never a new one of its
-// own. Callers must pass tx, not a fresh *gorm.DB, or the atomicity guarantee this package exists
-// for does not hold.
+// Write must be called with the caller's own open transaction, never a fresh *gorm.DB.
 func Write(tx *gorm.DB, aggregateType, aggregateID, eventType string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {

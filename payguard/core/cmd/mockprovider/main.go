@@ -1,8 +1,4 @@
-// Command mockprovider is a standalone, always-honest payment provider — the "ideal mock" from
-// hld.md §9.5. It has a real PSP's API surface (create, get, refund, outbound webhooks) and no
-// failure-injection mechanism: every failure the running system produces at the provider boundary
-// comes from genuinely breaking something (a short client timeout, stopping this process, a real
-// refund call), never from this service being asked to lie. See hld.md §9.5 and PLAN.md Phase B1.
+// Command mockprovider is a standalone, always-honest payment provider with no failure-injection mechanism.
 package main
 
 import (
@@ -22,9 +18,7 @@ import (
 	"time"
 )
 
-// confirmDelay is how long a created payment honestly stays "processing" before this service
-// confirms it — real card networks take real time. A client whose own timeout is shorter than this
-// genuinely misses the confirmation, which is what produces PROVIDER_AHEAD without rigging anything.
+// confirmDelay is how long a created payment honestly stays "processing" before this service confirms it.
 var confirmDelay = envDuration("PAYGUARD_MOCK_CONFIRM_DELAY_MS", 800*time.Millisecond)
 
 type paymentRecord struct {
@@ -54,10 +48,7 @@ func newStore() *store {
 	}
 }
 
-// createOrReplay honors provider-side idempotency: a create with a key we've already seen returns
-// the original payment as it currently stands, exactly like a real PSP — this is the Purchase →
-// Provider layer from hld.md §3 that stops a client retry from double-charging. The bool reports
-// whether this call actually created the row (false means a replay).
+// createOrReplay returns the existing record on a key it has already seen; the bool reports whether this call created it.
 func (s *store) createOrReplay(idemKey string, amountMinor int64, currency, webhookURL string) (*paymentRecord, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -68,9 +59,7 @@ func (s *store) createOrReplay(idemKey string, amountMinor int64, currency, webh
 
 	s.nextID++
 	rec := &paymentRecord{
-		// Seeded with the process start time so a restart never reissues an ID a prior run already
-		// gave out — a real PSP's IDs are never reused either, and our own uniqueness constraint on
-		// provider_payment_id is enforced durably forever, long after this in-memory store resets.
+		// Seeded with the process start time so a restart never reissues an ID a prior run gave out.
 		ID:             fmt.Sprintf("pay_%d_%d", s.startedAt, s.nextID),
 		IdempotencyKey: idemKey,
 		Status:         "processing",
@@ -91,30 +80,32 @@ func (s *store) get(id string) (*paymentRecord, bool) {
 	return rec, ok
 }
 
-// confirmSync blocks for confirmDelay — a real card network round trip — then flips the payment to
-// succeeded and fires a webhook if one was registered, returning a snapshot of the final state.
-// Blocking here (not a detached goroutine) is what makes hld.md §6.1's happy path work with no
-// webhook receiver or poller needed: the caller's own CreatePayment response already carries the
-// terminal status. A client whose own timeout is shorter than confirmDelay gives up on the response
-// before this returns — a genuine PROVIDER_AHEAD, since this goroutine (and the record it's about
-// to update) keeps running server-side regardless of whether anyone is still listening.
+// confirmSync blocks for confirmDelay, like a real card network round trip, then flips the payment to succeeded.
 func (s *store) confirmSync(rec *paymentRecord) *paymentRecord {
 	time.Sleep(confirmDelay)
 
 	s.mu.Lock()
 	rec.Status = "succeeded"
-	webhookURL := rec.WebhookURL
-	s.nextEventID++
-	eventID := fmt.Sprintf("evt_%d", s.nextEventID)
 	snapshot := *rec
 	s.mu.Unlock()
 
-	if webhookURL != "" {
-		deliverWebhook(webhookURL, eventID, &snapshot)
-	}
 	return &snapshot
 }
 
+// deliverWebhookAsync fires the webhook after the caller has already sent the synchronous response.
+func (s *store) deliverWebhookAsync(rec *paymentRecord) {
+	if rec.WebhookURL == "" {
+		return
+	}
+	s.mu.Lock()
+	s.nextEventID++
+	eventID := fmt.Sprintf("evt_%d", s.nextEventID)
+	s.mu.Unlock()
+
+	go deliverWebhook(rec.WebhookURL, eventID, rec)
+}
+
+// refund flips a payment to refunded; the caller fires the webhook afterward.
 func (s *store) refund(id string, amountMinor int64) (*paymentRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -123,14 +114,13 @@ func (s *store) refund(id string, amountMinor int64) (*paymentRecord, error) {
 		return nil, errNotFound
 	}
 	rec.Status = "refunded"
-	return rec, nil
+	snapshot := *rec
+	return &snapshot, nil
 }
 
 var errNotFound = errors.New("not found")
 
-// deliverWebhook is fire-and-forget with a short timeout — a stopped listener or unreachable URL
-// just fails quietly, exactly like a real misconfigured callback. Polling (GetPayment) is the
-// system's actual source of truth per hld.md §9.5; this is an optimization only.
+// deliverWebhook is fire-and-forget with a short timeout.
 func deliverWebhook(url, eventID string, rec *paymentRecord) {
 	body, err := json.Marshal(map[string]any{
 		"event_id":   eventID,
@@ -217,10 +207,12 @@ func registerRoutes(mux *http.ServeMux, s *store) {
 
 		rec, isNew := s.createOrReplay(idemKey, req.AmountMinor, req.Currency, req.WebhookURL)
 		if isNew {
-			// Block until settlement, like a real synchronous card-auth call — see confirmSync.
 			rec = s.confirmSync(rec)
 		}
 		writeJSON(w, http.StatusCreated, toPaymentWire(rec))
+		if isNew {
+			s.deliverWebhookAsync(rec)
+		}
 	})
 
 	mux.HandleFunc("GET /v1/payments/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -250,6 +242,7 @@ func registerRoutes(mux *http.ServeMux, s *store) {
 			Status:      rec.Status,
 			AmountMinor: req.AmountMinor,
 		})
+		s.deliverWebhookAsync(rec)
 	})
 }
 

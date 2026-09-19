@@ -21,8 +21,7 @@ const (
 	rawRefunded   rawStatus = "refunded"
 )
 
-// statusFromRaw is the one place a provider's wire string becomes our Status. No default branch: an
-// unrecognized string is ErrUnknownStatus, never silently folded onto a known state (hld.md §9.5).
+// statusFromRaw has no default branch: an unrecognized string is ErrUnknownStatus.
 func statusFromRaw(s string) (Status, error) {
 	switch rawStatus(s) {
 	case rawProcessing:
@@ -91,17 +90,13 @@ type refundRequestWire struct {
 	AmountMinor int64 `json:"amount_minor"`
 }
 
-// httpProvider is the running system's Provider implementation. It talks to the mock service today
-// and to a real PSP later — swapping baseURL (and, eventually, this struct's transport concerns) is
-// the only thing that changes. See hld.md §9.5.
+// httpProvider is the running system's Provider implementation.
 type httpProvider struct {
 	baseURL string
 	client  *http.Client
 }
 
-// NewHTTPProvider builds a Provider backed by an HTTP PSP at baseURL. The client's Timeout is the
-// PAYGUARD_PROVIDER_TIMEOUT_MS knob in production — set it short to genuinely produce PROVIDER_AHEAD
-// (hld.md §9.5's chaos table), not to simulate one.
+// NewHTTPProvider builds a Provider backed by an HTTP PSP at baseURL.
 func NewHTTPProvider(baseURL string, client *http.Client) Provider {
 	return &httpProvider{baseURL: baseURL, client: client}
 }

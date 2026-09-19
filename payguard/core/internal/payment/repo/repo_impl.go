@@ -28,9 +28,7 @@ func NewRepo(db *gorm.DB) Repo {
 	return &repoImpl{db: db}
 }
 
-// Create attempts the insert first. On a 23505 against paymentIdemConstraint, the transaction is
-// already aborted by Postgres, so the follow-up lookup deliberately happens OUTSIDE it, against a
-// fresh statement — querying inside an aborted transaction would itself error.
+// Create's follow-up lookup runs outside the failed transaction, which Postgres has already aborted.
 func (r *repoImpl) Create(ctx context.Context, p *models.Payment) (*models.Payment, error) {
 	txErr := withRetry(ctx, defaultRetryConfig, func() error {
 		return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -87,9 +85,19 @@ func (r *repoImpl) GetByID(ctx context.Context, id uint64) (*models.Payment, err
 	return &p, nil
 }
 
-// Transition checks CanTransition entirely in Go before issuing any write, so a rejected
-// transition never leaves a half-failed statement behind — unlike Create, there is no aborted-
-// transaction hazard here.
+func (r *repoImpl) GetByProviderPaymentID(ctx context.Context, providerPaymentID string) (*models.Payment, error) {
+	var p models.Payment
+	err := r.db.WithContext(ctx).Where("provider_payment_id = ?", providerPaymentID).First(&p).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, paymenterr.ErrPaymentNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// Transition checks CanTransition before issuing any write.
 func (r *repoImpl) Transition(ctx context.Context, id uint64, to models.Status, providerPaymentID, providerRawStatus string) (*models.Payment, error) {
 	var result *models.Payment
 	txErr := withRetry(ctx, defaultRetryConfig, func() error {

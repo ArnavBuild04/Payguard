@@ -111,8 +111,7 @@ func TestTransition_HappyPath_PendingToSuccess(t *testing.T) {
 	}
 }
 
-// TestTransition_NoCompensationFromFailed is hld.md's explicit rule: nothing was delivered on a
-// FAILED grant, so there is nothing to undo — FAILED → REVERSE_PENDING must be rejected.
+// TestTransition_NoCompensationFromFailed asserts FAILED → REVERSE_PENDING is rejected.
 func TestTransition_NoCompensationFromFailed(t *testing.T) {
 	r := getRepo(t)
 	ctx := context.Background()
@@ -173,9 +172,7 @@ func TestListSuccessByOrder_OnlyReturnsSuccessRows(t *testing.T) {
 	}
 }
 
-// TestConcurrentCreate_SameOrderAndOp fires the SAME grant-create from 50 goroutines; exactly one
-// must win and every caller must see the same row — the idempotency layer coordinator relies on
-// for a redelivered fan-out event (hld.md edge case F1).
+// TestConcurrentCreate_SameOrderAndOp asserts exactly one of 50 concurrent creates wins.
 func TestConcurrentCreate_SameOrderAndOp(t *testing.T) {
 	r := getRepo(t)
 	ctx := context.Background()

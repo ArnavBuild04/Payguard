@@ -60,9 +60,7 @@ func TestWrite_CommitsInsideTransaction(t *testing.T) {
 	}
 }
 
-// TestWrite_RolledBackWithTransaction is the dual-write proof: if the state change the event
-// represents fails to commit, the event must not exist either — there is no window where an event
-// is recorded for a change that never happened.
+// TestWrite_RolledBackWithTransaction asserts a rolled-back write leaves no event row.
 func TestWrite_RolledBackWithTransaction(t *testing.T) {
 	db := getDB(t)
 	ctx := context.Background()

@@ -21,8 +21,7 @@ const (
 	StatusReversed       Status = "REVERSED"
 )
 
-// Transaction is one row PER GRANT, not per order — a bundle of N grants produces N rows, so one
-// grant failing never blocks or hides the others (hld.md §6.3's partial-bundle case).
+// Transaction is one row per grant, not per order.
 type Transaction struct {
 	ID            uint64        `gorm:"primaryKey;autoIncrement;column:id" json:"id"`
 	OrderID       uint64        `gorm:"column:order_id;not null;uniqueIndex:uq_transaction_op,priority:1" json:"order_id"`

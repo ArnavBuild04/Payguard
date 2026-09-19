@@ -34,8 +34,7 @@ func (s *serviceImpl) HandlePaymentSucceeded(ctx context.Context, orderID uint64
 		return fmt.Errorf("coordinator: no grants configured for sku %q", sku)
 	}
 
-	// Per-grant rows, processed independently — hld.md §6.3: one grant failing must never block or
-	// hide the others, so every op runs regardless of an earlier one's outcome.
+	// Every op runs regardless of an earlier one's outcome.
 	var firstErr error
 	for _, op := range ops {
 		if err := s.processGrant(ctx, orderID, tenantID, userID, op, amountMinor); err != nil && firstErr == nil {
@@ -65,13 +64,11 @@ func (s *serviceImpl) processGrant(ctx context.Context, orderID uint64, tenantID
 		txn = created
 	case errors.Is(err, coordinatorerr.ErrAlreadyProcessed):
 		if created.Status != models.StatusPending {
-			// Terminal already (SUCCESS or FAILED from an earlier delivery) — a redelivered
-			// fan-out is a no-op, exactly like hld.md edge case F1.
+			// Already terminal — a redelivered fan-out is a no-op.
 			slog.Info("coordinator: grant already processed", "order_id", orderID, "op", op, "status", created.Status)
 			return nil
 		}
-		// Still PENDING from a run that never finished (e.g. a crash mid-fan-out) — retry it. The
-		// downstream call's own idempotency (F4/F5) makes this safe even if it actually landed.
+		// Still PENDING from a run that never finished — retry it.
 		txn = created
 	default:
 		return fmt.Errorf("coordinator: create transaction: %w", err)
@@ -134,7 +131,7 @@ func (s *serviceImpl) reverseOne(ctx context.Context, txn models.Transaction) er
 	reversed, err := s.repo.Transition(ctx, txn.ID, models.StatusReversePending, "")
 	if err != nil {
 		if errors.Is(err, coordinatorerr.ErrInvalidTransition) {
-			// Already reversed, or being reversed by a concurrent call — safe no-op.
+			// Already reversed, or being reversed concurrently.
 			return nil
 		}
 		return fmt.Errorf("coordinator: mark reverse-pending: %w", err)
@@ -142,8 +139,7 @@ func (s *serviceImpl) reverseOne(ctx context.Context, txn models.Transaction) er
 
 	if err := s.performReversal(ctx, reversed); err != nil {
 		if errors.Is(err, coordinatorerr.ErrClawbackShortfall) {
-			// Left at REVERSE_PENDING deliberately — hld.md §5.6: the player already spent the
-			// chips, balance never goes negative, and this is a business decision for a human.
+			// Left at REVERSE_PENDING for a human; balance never goes negative.
 			slog.Warn("coordinator: clawback shortfall, left REVERSE_PENDING for a human", "order_id", txn.OrderID, "op", txn.OperationType)
 		} else {
 			slog.Error("coordinator: reversal failed", "order_id", txn.OrderID, "op", txn.OperationType, "err", err)
@@ -181,8 +177,7 @@ func (s *serviceImpl) performReversal(ctx context.Context, txn *models.Transacti
 	}
 }
 
-// callWithRetry is a small bounded retry, full jitter, matching §4.7's convention (no backoff
-// library). hld.md edge case F3: a grant service down gets bounded retries, then FAILED + case.
+// callWithRetry is a small bounded retry with full jitter.
 func callWithRetry(ctx context.Context, fn func() error) error {
 	const maxAttempts = 3
 	base := 50 * time.Millisecond

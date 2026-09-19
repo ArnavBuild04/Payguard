@@ -1,10 +1,10 @@
-// Package httpapi is the thin HTTP layer over the payment (Purchase) service — the only service
-// the client calls (hld.md §1).
+// Package httpapi is the thin HTTP layer over the payment (Purchase) service.
 package httpapi
 
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -16,6 +16,7 @@ import (
 func RegisterRoutes(mux *http.ServeMux, svc service.Service) {
 	mux.HandleFunc("POST /v1/payments", handleCreate(svc))
 	mux.HandleFunc("GET /v1/payments/{id}", handleGet(svc))
+	mux.HandleFunc("POST /v1/payments/webhooks", handleWebhook(svc))
 }
 
 type createRequest struct {
@@ -75,6 +76,47 @@ func handleGet(svc service.Service) http.HandlerFunc {
 			slog.Error("payment lookup failed unexpectedly", "err", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 		}
+	}
+}
+
+// webhookWire matches the mock provider's outbound delivery shape.
+type webhookWire struct {
+	EventID   string `json:"event_id"`
+	EventType string `json:"event_type"`
+	Payment   struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	} `json:"payment"`
+}
+
+// webhookSource identifies every inbound provider webhook uniformly.
+const webhookSource = "provider"
+
+func handleWebhook(svc service.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "failed to read request body")
+			return
+		}
+
+		var wire webhookWire
+		if err := json.Unmarshal(body, &wire); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if wire.EventID == "" || wire.Payment.ID == "" {
+			writeError(w, http.StatusBadRequest, "event_id and payment.id are required")
+			return
+		}
+
+		err = svc.HandleWebhook(r.Context(), webhookSource, wire.EventID, wire.EventType, wire.Payment.ID, wire.Payment.Status, string(body))
+		if err != nil {
+			slog.Error("payment: webhook handling failed unexpectedly", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "received"})
 	}
 }
 

@@ -1,7 +1,6 @@
 package models
 
-// allowedTransitions is the DTC state machine from hld.md §4. Compensation exists only from
-// SUCCESS, never from FAILED — nothing was delivered on a FAILED grant, so there is nothing to undo.
+// allowedTransitions is the DTC state machine; compensation only ever starts from SUCCESS.
 var allowedTransitions = map[Status]map[Status]bool{
 	StatusPending:        {StatusSuccess: true, StatusFailed: true},
 	StatusSuccess:        {StatusReversePending: true},

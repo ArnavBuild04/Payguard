@@ -14,12 +14,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ArnavBuild04/payguard/core/internal/cache"
 	coordinatorgranter "github.com/ArnavBuild04/payguard/core/internal/coordinator/granter"
 	coordinatormodels "github.com/ArnavBuild04/payguard/core/internal/coordinator/models"
 	coordinatorrepo "github.com/ArnavBuild04/payguard/core/internal/coordinator/repo"
 	coordinatorservice "github.com/ArnavBuild04/payguard/core/internal/coordinator/service"
 
 	"github.com/ArnavBuild04/payguard/core/internal/config"
+	pgkafka "github.com/ArnavBuild04/payguard/core/internal/kafka"
+	kafkamodels "github.com/ArnavBuild04/payguard/core/internal/kafka/models"
 	"github.com/ArnavBuild04/payguard/core/internal/outbox"
 	outboxmodels "github.com/ArnavBuild04/payguard/core/internal/outbox/models"
 	paymenthttpapi "github.com/ArnavBuild04/payguard/core/internal/payment/httpapi"
@@ -36,6 +39,12 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+const (
+	topicPaymentEvents = "payment.events"
+	topicPaymentDLQ    = "payment.dlq"
+	dtcConsumerGroup   = "dtc-consumer"
+)
+
 func main() {
 	cfg, err := config.Load("config.json")
 	if err != nil {
@@ -47,7 +56,7 @@ func main() {
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%d sslmode=disable TimeZone=UTC",
 		cfg.Database.Host, cfg.Database.User, cfg.Database.Password, cfg.Database.Name, cfg.Database.Port)
 
-	// GORM's default logger reports expected outcomes (idempotent replay, not-found) as ERROR; silenced in favor of httpapi's leveled logging.
+	// GORM's default logger reports expected outcomes as ERROR; silenced in favor of httpapi's own logging.
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
@@ -60,22 +69,34 @@ func main() {
 		&paymentmodels.Payment{}, &paymentmodels.PaymentEvent{},
 		&outboxmodels.Event{},
 		&coordinatormodels.Transaction{},
+		&kafkamodels.ProcessedEvent{},
 	); err != nil {
 		log.Fatalf("failed to auto-migrate models: %v", err)
 	}
 
+	cacheClient := cache.New(cfg.Redis.Addr)
+	defer cacheClient.Close()
+
 	svc := service.NewService(repo.NewRepo(db))
 
 	providerClient := provider.NewHTTPProvider(cfg.Provider.BaseURL, &http.Client{Timeout: providerTimeout(cfg)})
-	paymentSvc := paymentservice.NewService(paymentrepo.NewRepo(db), providerClient)
+	webhookURL := fmt.Sprintf("http://localhost:%d/v1/payments/webhooks", cfg.HTTPPort)
+	paymentSvc := paymentservice.NewService(paymentrepo.NewRepo(db), providerClient, webhookURL, cacheClient)
 
 	assetGranter := coordinatorgranter.NewHTTPAssetGranter(cfg.Coordinator.AssetServiceURL, &http.Client{Timeout: 5 * time.Second})
 	ticketGranter := coordinatorgranter.NewHTTPTicketGranter(cfg.Coordinator.TicketServiceURL, &http.Client{Timeout: 5 * time.Second})
 	coordinatorSvc := coordinatorservice.NewService(coordinatorrepo.NewRepo(db), svc, assetGranter, ticketGranter)
 
+	// The relay publishes to Kafka; the consumer below does the actual fan-out.
+	eventsProducer := pgkafka.NewProducer(cfg.Kafka.Brokers, topicPaymentEvents)
+	defer eventsProducer.Close()
+	dlqProducer := pgkafka.NewProducer(cfg.Kafka.Brokers, topicPaymentDLQ)
+	defer dlqProducer.Close()
+
 	relayCtx, stopRelay := context.WithCancel(context.Background())
 	defer stopRelay()
-	go outbox.RunRelay(relayCtx, db, paymentSucceededHandler(coordinatorSvc), 2*time.Second)
+	go outbox.RunRelay(relayCtx, db, cacheClient, kafkaPublishHandler(eventsProducer), 2*time.Second)
+	go pgkafka.RunConsumer(relayCtx, db, cfg.Kafka.Brokers, topicPaymentEvents, dtcConsumerGroup, dlqProducer, dtcEventHandler(coordinatorSvc, paymentSvc))
 
 	mux := http.NewServeMux()
 	httpapi.RegisterRoutes(mux, svc)
@@ -121,8 +142,7 @@ func httpAddr(cfg *config.Config) string {
 	return fmt.Sprintf(":%d", cfg.HTTPPort)
 }
 
-// providerTimeout is deliberately overridable by PAYGUARD_PROVIDER_TIMEOUT_MS at runtime — hld.md
-// §9.5's production knob for genuinely producing PROVIDER_AHEAD, not a test-only setting.
+// providerTimeout is overridable by PAYGUARD_PROVIDER_TIMEOUT_MS at runtime.
 func providerTimeout(cfg *config.Config) time.Duration {
 	if v := os.Getenv("PAYGUARD_PROVIDER_TIMEOUT_MS"); v != "" {
 		if ms, err := strconv.Atoi(v); err == nil {
@@ -135,27 +155,50 @@ func providerTimeout(cfg *config.Config) time.Duration {
 	return 5 * time.Second
 }
 
-// paymentSucceededHandler is the outbox relay's dispatch function — the in-process stand-in for
-// Kafka's payment.events topic in this phase (PLAN.md Phase B1). It decodes the event generically
-// rather than importing payment's own payload type, so outbox and coordinator never need to know
-// about payment's internals — only main.go glues the three together.
-func paymentSucceededHandler(coordinatorSvc coordinatorservice.Service) outbox.Handler {
+// kafkaPublishHandler is the outbox relay's dispatch function: a real Kafka publish.
+func kafkaPublishHandler(producer *pgkafka.Producer) outbox.Handler {
 	return func(ctx context.Context, ev outboxmodels.Event) error {
-		if ev.EventType != "PAYMENT_SUCCEEDED" {
+		return producer.Publish(ctx, ev.AggregateID, pgkafka.Envelope{
+			EventID:     strconv.FormatUint(ev.ID, 10),
+			EventType:   ev.EventType,
+			AggregateID: ev.AggregateID,
+			PayloadJSON: ev.PayloadJSON,
+		})
+	}
+}
+
+// dtcEventHandler is the consumer side of payment.events.
+func dtcEventHandler(coordinatorSvc coordinatorservice.Service, paymentSvc paymentservice.Service) pgkafka.Handler {
+	return func(ctx context.Context, env pgkafka.Envelope) error {
+		switch env.EventType {
+		case "PAYMENT_SUCCEEDED":
+			var payload struct {
+				PaymentID   uint64 `json:"payment_id"`
+				TenantID    string `json:"tenant_id"`
+				UserID      int64  `json:"user_id"`
+				SKU         string `json:"sku"`
+				AmountMinor int64  `json:"amount_minor"`
+			}
+			if err := json.Unmarshal([]byte(env.PayloadJSON), &payload); err != nil {
+				return fmt.Errorf("decode PAYMENT_SUCCEEDED payload: %w", err)
+			}
+			return coordinatorSvc.HandlePaymentSucceeded(ctx, payload.PaymentID, payload.TenantID, payload.UserID, payload.SKU, payload.AmountMinor)
+
+		case "PAYMENT_REFUND_PENDING":
+			// The only place that ever calls Compensate.
+			var payload struct {
+				PaymentID uint64 `json:"payment_id"`
+			}
+			if err := json.Unmarshal([]byte(env.PayloadJSON), &payload); err != nil {
+				return fmt.Errorf("decode PAYMENT_REFUND_PENDING payload: %w", err)
+			}
+			if err := coordinatorSvc.Compensate(ctx, payload.PaymentID); err != nil {
+				return err
+			}
+			return paymentSvc.MarkRefunded(ctx, payload.PaymentID)
+
+		default:
 			return nil
 		}
-
-		var payload struct {
-			PaymentID   uint64 `json:"payment_id"`
-			TenantID    string `json:"tenant_id"`
-			UserID      int64  `json:"user_id"`
-			SKU         string `json:"sku"`
-			AmountMinor int64  `json:"amount_minor"`
-		}
-		if err := json.Unmarshal([]byte(ev.PayloadJSON), &payload); err != nil {
-			return fmt.Errorf("decode PAYMENT_SUCCEEDED payload: %w", err)
-		}
-
-		return coordinatorSvc.HandlePaymentSucceeded(ctx, payload.PaymentID, payload.TenantID, payload.UserID, payload.SKU, payload.AmountMinor)
 	}
 }

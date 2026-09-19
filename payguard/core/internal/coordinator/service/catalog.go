@@ -2,9 +2,7 @@ package service
 
 import "github.com/ArnavBuild04/payguard/core/internal/coordinator/models"
 
-// grantsForSKU is the hardcoded SKU → expected-grants map hld.md's Phase C detector (pass 2) will
-// also read from — kept here since the DTC is the thing that actually decides what a bundle
-// delivers. Matches the pricing catalog's SKUs in payment/service/catalog.go.
+// grantsForSKU maps a SKU to its bundle of grants.
 var grantsForSKU = map[string][]models.OperationType{
 	"BUNDLE_10K":    {models.OpCreditChips},
 	"BUNDLE_50K":    {models.OpCreditChips},

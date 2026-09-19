@@ -37,7 +37,7 @@ func TestRelay_DispatchSuccess_MarksPublished(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	go outbox.RunRelay(ctx, testDB, handler, 20*time.Millisecond)
+	go outbox.RunRelay(ctx, testDB, nil, handler, 20*time.Millisecond)
 	<-ctx.Done()
 
 	if atomic.LoadInt64(&dispatched) != 1 {
@@ -75,7 +75,7 @@ func TestRelay_DispatchFailure_LeavesUnpublishedAndRetries(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	go outbox.RunRelay(ctx, testDB, handler, 20*time.Millisecond)
+	go outbox.RunRelay(ctx, testDB, nil, handler, 20*time.Millisecond)
 	<-ctx.Done()
 
 	if atomic.LoadInt64(&attempts) < 3 {
@@ -94,9 +94,7 @@ func TestRelay_DispatchFailure_LeavesUnpublishedAndRetries(t *testing.T) {
 	}
 }
 
-// TestRelay_TwoInstances_NeverDoubleDispatch is hld.md edge case D4: SELECT ... FOR UPDATE SKIP
-// LOCKED means two concurrent relay instances draining the same table never both process the same
-// row.
+// TestRelay_TwoInstances_NeverDoubleDispatch asserts two concurrent relays never both process the same row.
 func TestRelay_TwoInstances_NeverDoubleDispatch(t *testing.T) {
 	getDB(t)
 	const n = 30
@@ -121,7 +119,7 @@ func TestRelay_TwoInstances_NeverDoubleDispatch(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			outbox.RunRelay(ctx, testDB, handler, 10*time.Millisecond)
+			outbox.RunRelay(ctx, testDB, nil, handler, 10*time.Millisecond)
 		}()
 	}
 	wg.Wait()

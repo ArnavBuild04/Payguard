@@ -1,8 +1,4 @@
-// Command grantstub is the standalone stand-in for the asset and ticket grant services — "their own
-// grant tables, stubs for now, real interface" per hld.md §1. It is deliberately a separate process
-// (not mounted inside cmd/server) so the partial-bundle chaos scenario in hld.md §9.5 — "stop one
-// grant service; chips land, the ticket does not" — is produced by genuinely killing this process,
-// not by a rigged failure flag.
+// Command grantstub is the standalone stand-in for the asset and ticket grant services.
 package main
 
 import (
@@ -20,8 +16,7 @@ import (
 	"time"
 )
 
-// store dedups grant/revoke calls by order_id — a redelivered fan-out event (hld.md edge case F1)
-// must be a no-op here, not a second grant.
+// store dedups grant/revoke calls by order_id.
 type store struct {
 	mu      sync.Mutex
 	granted map[uint64]bool

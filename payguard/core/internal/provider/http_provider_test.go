@@ -11,8 +11,7 @@ import (
 	"github.com/ArnavBuild04/payguard/core/internal/provider/providererr"
 )
 
-// TestCreatePayment_Success proves an honest 2xx with a recognized status maps cleanly, and that the
-// Idempotency-Key header actually goes out on the wire.
+// TestCreatePayment_Success asserts a 2xx maps cleanly and the Idempotency-Key header goes out.
 func TestCreatePayment_Success(t *testing.T) {
 	var gotKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -39,8 +38,7 @@ func TestCreatePayment_Success(t *testing.T) {
 	}
 }
 
-// TestCreatePayment_Timeout is rule (a) from hld.md §9.5: a timeout must map to ErrUnknown, never a
-// failure — the provider may have honestly received and even completed the charge.
+// TestCreatePayment_Timeout asserts a timeout maps to ErrUnknown, never a failure.
 func TestCreatePayment_Timeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(50 * time.Millisecond)
@@ -49,8 +47,7 @@ func TestCreatePayment_Timeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Client-side deadline shorter than the handler's honest delay — a genuine timeout, not a rigged
-	// mock (the server really does succeed, just after we've stopped waiting).
+	// Client-side deadline is shorter than the handler's honest delay.
 	p := NewHTTPProvider(srv.URL, &http.Client{Timeout: 5 * time.Millisecond})
 	_, err := p.CreatePayment(context.Background(), CreateRequest{IdempotencyKey: "k-1", AmountMinor: 1000, Currency: "USD"})
 	if !errors.Is(err, providererr.ErrUnknown) {
@@ -58,8 +55,7 @@ func TestCreatePayment_Timeout(t *testing.T) {
 	}
 }
 
-// TestCreatePayment_NonTwoXX is the other half of rule (a): a non-2xx is also "we don't know", not a
-// confirmed failure — providers can 5xx after having actually processed the charge.
+// TestCreatePayment_NonTwoXX asserts a non-2xx also maps to ErrUnknown, not a confirmed failure.
 func TestCreatePayment_NonTwoXX(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -73,8 +69,7 @@ func TestCreatePayment_NonTwoXX(t *testing.T) {
 	}
 }
 
-// TestGetPayment_UnknownStatus is the "no silent default" rule: a status string absent from our map
-// must surface as ErrUnknownStatus, never get folded onto PROCESSING/SUCCEEDED/FAILED/REFUNDED.
+// TestGetPayment_UnknownStatus asserts an unrecognized status surfaces as ErrUnknownStatus.
 func TestGetPayment_UnknownStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -89,8 +84,7 @@ func TestGetPayment_UnknownStatus(t *testing.T) {
 	}
 }
 
-// TestGetPayment_NotFound proves a 404 maps to ErrNotFound, not a generic ErrUnknown — this is an
-// authoritative answer from the provider ("I have no record of this"), unlike a timeout.
+// TestGetPayment_NotFound asserts a 404 maps to ErrNotFound, not a generic ErrUnknown.
 func TestGetPayment_NotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -104,9 +98,7 @@ func TestGetPayment_NotFound(t *testing.T) {
 	}
 }
 
-// TestGetPayment_DrivesToTerminal_WithoutWebhooks is rule (b) from hld.md §9.5: polling alone, with
-// no webhook involved anywhere in this test, must be able to observe a payment reach a terminal
-// state. This is the test that stops the client from silently depending on webhooks always arriving.
+// TestGetPayment_DrivesToTerminal_WithoutWebhooks asserts polling alone reaches a terminal state.
 func TestGetPayment_DrivesToTerminal_WithoutWebhooks(t *testing.T) {
 	var polls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,8 +130,7 @@ func TestGetPayment_DrivesToTerminal_WithoutWebhooks(t *testing.T) {
 	}
 }
 
-// TestRefund_Success and TestRefund_NotFound round out the third Provider method with the same
-// honest-mapping rules as Create/Get.
+// TestRefund_Success asserts Refund follows the same honest-mapping rules as Create/Get.
 func TestRefund_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

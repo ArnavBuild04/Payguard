@@ -2,8 +2,7 @@ package models
 
 import "time"
 
-// Event is an outbox row. PublishedAt is nil until the relay (Phase B2's Kafka publish; an
-// in-process drain for now) marks it delivered.
+// Event is an outbox row; PublishedAt is nil until the relay marks it delivered.
 type Event struct {
 	ID            uint64     `gorm:"primaryKey;autoIncrement;column:id" json:"id"`
 	AggregateType string     `gorm:"column:aggregate_type;not null;index" json:"aggregate_type"`

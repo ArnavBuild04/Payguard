@@ -22,9 +22,7 @@ func NewRepo(db *gorm.DB) Repo {
 	return &repoImpl{db: db}
 }
 
-// Create attempts the insert first. On a 23505 the transaction is already aborted by Postgres, so
-// the follow-up lookup deliberately happens OUTSIDE it, against a fresh statement — same hazard as
-// payment/repo's Create, same fix.
+// Create's follow-up lookup runs outside the failed transaction, which Postgres has already aborted.
 func (r *repoImpl) Create(ctx context.Context, txn *models.Transaction) (*models.Transaction, error) {
 	txErr := withRetry(ctx, defaultRetryConfig, func() error {
 		return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -76,8 +74,7 @@ func (r *repoImpl) ListSuccessByOrder(ctx context.Context, orderID uint64) ([]mo
 	return txns, nil
 }
 
-// Transition checks CanTransition entirely in Go before issuing any write, so a rejected
-// transition never leaves a half-failed statement behind.
+// Transition checks CanTransition before issuing any write.
 func (r *repoImpl) Transition(ctx context.Context, id uint64, to models.Status, lastError string) (*models.Transaction, error) {
 	var result *models.Transaction
 	txErr := withRetry(ctx, defaultRetryConfig, func() error {

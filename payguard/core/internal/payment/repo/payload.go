@@ -6,8 +6,7 @@ import (
 	"github.com/ArnavBuild04/payguard/core/internal/payment/models"
 )
 
-// paymentEventPayload is the outbox event body — enough for the relay's eventual Kafka consumers
-// (Phase B2's DTC) to act without a second lookup against payments.
+// paymentEventPayload is the outbox event body.
 type paymentEventPayload struct {
 	PaymentID   uint64        `json:"payment_id"`
 	TenantID    string        `json:"tenant_id"`
