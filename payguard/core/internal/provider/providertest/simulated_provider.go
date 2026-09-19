@@ -71,7 +71,11 @@ func (f *SimulatedProvider) GetPayment(_ context.Context, id string) (*provider.
 		return nil, f.GetErr
 	}
 	if f.unknownStatus[id] {
-		return nil, providererr.ErrUnknownStatus
+		raw := ""
+		if p, ok := f.payments[id]; ok {
+			raw = p.RawStatus
+		}
+		return nil, &providererr.UnknownStatusError{Raw: raw}
 	}
 	p, ok := f.payments[id]
 	if !ok {

@@ -11,6 +11,7 @@ import (
 	coordinatorservice "github.com/ArnavBuild04/payguard/core/internal/coordinator/service"
 	paymentmodels "github.com/ArnavBuild04/payguard/core/internal/payment/models"
 	paymentservice "github.com/ArnavBuild04/payguard/core/internal/payment/service"
+	"github.com/ArnavBuild04/payguard/core/internal/policy"
 	"github.com/ArnavBuild04/payguard/core/internal/provider"
 	"github.com/ArnavBuild04/payguard/core/internal/reconcile/models"
 	"github.com/ArnavBuild04/payguard/core/internal/reconcile/reconcileerr"
@@ -21,14 +22,15 @@ type serviceImpl struct {
 	repo           repo.Repo
 	paymentSvc     paymentservice.Service
 	coordinatorSvc coordinatorservice.Service
+	policyEngine   *policy.Engine
 
 	autoResolveCeiling int64
 	maxAutoAttempts    int
 }
 
-func NewService(r repo.Repo, paymentSvc paymentservice.Service, coordinatorSvc coordinatorservice.Service, autoResolveCeiling int64, maxAutoAttempts int) Service {
+func NewService(r repo.Repo, paymentSvc paymentservice.Service, coordinatorSvc coordinatorservice.Service, policyEngine *policy.Engine, autoResolveCeiling int64, maxAutoAttempts int) Service {
 	return &serviceImpl{
-		repo: r, paymentSvc: paymentSvc, coordinatorSvc: coordinatorSvc,
+		repo: r, paymentSvc: paymentSvc, coordinatorSvc: coordinatorSvc, policyEngine: policyEngine,
 		autoResolveCeiling: autoResolveCeiling, maxAutoAttempts: maxAutoAttempts,
 	}
 }
@@ -157,6 +159,12 @@ func defaultAction(reason models.Reason, ev models.Evidence) models.Action {
 func (s *serviceImpl) resolve(ctx context.Context, c *models.Case, resolvedBy string, action models.Action) error {
 	var ev models.Evidence
 	_ = json.Unmarshal([]byte(c.EvidenceJSON), &ev)
+
+	if s.policyEngine != nil {
+		if d := s.policyEngine.Evaluate(c.Reason, action, ev.AmountMinor); !d.Permitted {
+			return fmt.Errorf("%w: %s", reconcileerr.ErrPolicyDenied, d.Reason)
+		}
+	}
 
 	var opErr error
 	switch action {

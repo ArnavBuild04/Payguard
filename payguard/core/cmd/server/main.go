@@ -29,12 +29,14 @@ import (
 	paymentmodels "github.com/ArnavBuild04/payguard/core/internal/payment/models"
 	paymentrepo "github.com/ArnavBuild04/payguard/core/internal/payment/repo"
 	paymentservice "github.com/ArnavBuild04/payguard/core/internal/payment/service"
+	"github.com/ArnavBuild04/payguard/core/internal/policy"
 	"github.com/ArnavBuild04/payguard/core/internal/provider"
 	"github.com/ArnavBuild04/payguard/core/internal/reconcile/detector"
 	reconcilehttpapi "github.com/ArnavBuild04/payguard/core/internal/reconcile/httpapi"
 	reconcilemodels "github.com/ArnavBuild04/payguard/core/internal/reconcile/models"
 	reconcilerepo "github.com/ArnavBuild04/payguard/core/internal/reconcile/repo"
 	reconcileservice "github.com/ArnavBuild04/payguard/core/internal/reconcile/service"
+	toolshttpapi "github.com/ArnavBuild04/payguard/core/internal/tools/httpapi"
 	unmatchedwebhookmodels "github.com/ArnavBuild04/payguard/core/internal/unmatchedwebhook/models"
 	"github.com/ArnavBuild04/payguard/core/internal/wallet/httpapi"
 	"github.com/ArnavBuild04/payguard/core/internal/wallet/models"
@@ -116,17 +118,19 @@ func main() {
 	det := detector.New(db, providerClient, reconcileRepo)
 	go det.Run(relayCtx, detectorSweepInterval)
 
-	reconcileSvc := reconcileservice.NewService(reconcileRepo, paymentSvc, coordinatorSvc, cfg.Reconcile.AutoResolveCeilingMinor, cfg.Reconcile.MaxAutoAttempts)
+	policyEngine := policy.New(cfg.Policy.MaxCompensateMinor)
+	reconcileSvc := reconcileservice.NewService(reconcileRepo, paymentSvc, coordinatorSvc, policyEngine, cfg.Reconcile.AutoResolveCeilingMinor, cfg.Reconcile.MaxAutoAttempts)
 	go reconcileSvc.RunAutoResolver(relayCtx, autoResolveSweepInterval)
 
 	mux := http.NewServeMux()
 	httpapi.RegisterRoutes(mux, svc)
 	paymenthttpapi.RegisterRoutes(mux, paymentSvc)
 	reconcilehttpapi.RegisterRoutes(mux, reconcileSvc)
+	toolshttpapi.RegisterRoutes(mux, reconcileSvc, paymentSvc, svc, providerClient)
 
 	srv := &http.Server{
 		Addr:              httpAddr(cfg),
-		Handler:           mux,
+		Handler:           withCORS(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -155,6 +159,22 @@ func main() {
 	} else {
 		slog.Info("shutdown complete")
 	}
+}
+
+// withCORS lets the static approval UI (served from its own origin/port) call this API
+// directly from the browser. Permissive by design -- this is a local demo server, not a
+// production deployment behind a real origin allowlist.
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func httpAddr(cfg *config.Config) string {

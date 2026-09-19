@@ -33,7 +33,7 @@ func statusFromRaw(s string) (Status, error) {
 	case rawRefunded:
 		return StatusRefunded, nil
 	default:
-		return "", providererr.ErrUnknownStatus
+		return "", &providererr.UnknownStatusError{Raw: s}
 	}
 }
 

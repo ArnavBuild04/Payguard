@@ -18,6 +18,7 @@ import (
 	paymentmodels "github.com/ArnavBuild04/payguard/core/internal/payment/models"
 	paymentrepo "github.com/ArnavBuild04/payguard/core/internal/payment/repo"
 	paymentservice "github.com/ArnavBuild04/payguard/core/internal/payment/service"
+	"github.com/ArnavBuild04/payguard/core/internal/policy"
 	"github.com/ArnavBuild04/payguard/core/internal/provider/providertest"
 	"github.com/ArnavBuild04/payguard/core/internal/reconcile/models"
 	"github.com/ArnavBuild04/payguard/core/internal/reconcile/reconcileerr"
@@ -32,9 +33,10 @@ import (
 )
 
 const (
-	testDSN         = "host=localhost user=payguard password=payguard dbname=payguard port=5432 sslmode=disable TimeZone=UTC"
-	autoResolveCeil = int64(5000)
-	maxAutoAttempts = 3
+	testDSN            = "host=localhost user=payguard password=payguard dbname=payguard port=5432 sslmode=disable TimeZone=UTC"
+	autoResolveCeil    = int64(5000)
+	maxAutoAttempts    = 3
+	maxCompensateMinor = int64(1_000_000) // generous test ceiling; policy denial itself is tested in internal/policy
 )
 
 var (
@@ -85,7 +87,7 @@ func newServicesWithTicketGranter(db *gorm.DB, ticketGranter coordinatorgranter.
 		coordinatorrepo.NewRepo(db), walletSvc,
 		coordinatorgranter.NewInMemoryGranter(), ticketGranter,
 	)
-	reconcileSvc := service.NewService(reconcilerepo.NewRepo(db), paymentSvc, coordinatorSvc, autoResolveCeil, maxAutoAttempts)
+	reconcileSvc := service.NewService(reconcilerepo.NewRepo(db), paymentSvc, coordinatorSvc, policy.New(maxCompensateMinor), autoResolveCeil, maxAutoAttempts)
 	return reconcileSvc, paymentSvc, walletSvc, coordinatorSvc
 }
 

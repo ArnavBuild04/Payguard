@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PayGuard — Reconciliation Approval Queue</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  .config { font-size: 0.85rem; color: #555; margin-bottom: 1.5rem; }
+  .config input { width: 220px; font-family: monospace; }
+  .case { border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  .case-header { display: flex; justify-content: space-between; align-items: baseline; }
+  .reason { font-weight: 600; }
+  .status-open { color: #b45309; }
+  .confidence { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+  .confidence-high { background: #dcfce7; color: #166534; }
+  .confidence-medium { background: #fef9c3; color: #854d0e; }
+  .confidence-low { background: #fee2e2; color: #991b1b; }
+  .conclusion { margin: 0.5rem 0; }
+  .evidence, .missing, .citations { font-size: 0.85rem; color: #444; }
+  .citations blockquote { margin: 0.25rem 0; padding-left: 0.75rem; border-left: 3px solid #ccc; color: #555; }
+  .no-recommendation { color: #888; font-style: italic; }
+  .actions { margin-top: 0.75rem; }
+  button { cursor: pointer; padding: 0.4rem 0.9rem; border-radius: 6px; border: 1px solid #ccc; margin-right: 0.5rem; font-size: 0.9rem; }
+  .approve { background: #16a34a; color: white; border-color: #16a34a; }
+  .reject { background: #dc2626; color: white; border-color: #dc2626; }
+  .investigate { background: #2563eb; color: white; border-color: #2563eb; }
+  .empty { color: #888; text-align: center; padding: 3rem 0; }
+  .result-msg { font-size: 0.85rem; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+<h1>PayGuard — Reconciliation Approval Queue</h1>
+<p class="config">
+  Core: <input id="coreUrl" value="http://localhost:8080" />
+  Agent: <input id="agentUrl" value="http://localhost:8090" />
+  Approver: <input id="actor" value="interviewer-demo" />
+  <button onclick="load()">Refresh</button>
+</p>
+<div id="cases"></div>
+
+<script>
+async function load() {
+  const coreUrl = document.getElementById('coreUrl').value;
+  const agentUrl = document.getElementById('agentUrl').value;
+  const container = document.getElementById('cases');
+  container.innerHTML = 'Loading...';
+
+  const [casesRes, recsRes] = await Promise.all([
+    fetch(`${coreUrl}/v1/reconciliation-cases`),
+    fetch(`${agentUrl}/cases/recommendations`).catch(() => null),
+  ]);
+  const cases = await casesRes.json();
+  const recs = recsRes && recsRes.ok ? await recsRes.json() : {};
+
+  if (!cases.length) {
+    container.innerHTML = '<p class="empty">No open cases.</p>';
+    return;
+  }
+
+  container.innerHTML = '';
+  for (const c of cases) {
+    const rec = recs[c.id];
+    container.appendChild(renderCase(c, rec, coreUrl, agentUrl));
+  }
+}
+
+function renderCase(c, rec, coreUrl, agentUrl) {
+  const div = document.createElement('div');
+  div.className = 'case';
+
+  const evidence = JSON.parse(c.evidence_json || '{}');
+
+  let recHtml = '<p class="no-recommendation">Not yet investigated by the agent.</p>';
+  if (rec) {
+    const citations = (rec.policy_citations || [])
+      .map(ct => `<blockquote>&ldquo;${escapeHtml(ct.content)}&rdquo; <em>(${escapeHtml(ct.doc_name)}, similarity ${ct.similarity.toFixed(2)})</em></blockquote>`)
+      .join('');
+    recHtml = `
+      <p class="conclusion"><span class="confidence confidence-${rec.confidence}">${rec.confidence.toUpperCase()}</span> ${escapeHtml(rec.conclusion)}</p>
+      <p class="evidence"><strong>Recommended action:</strong> ${escapeHtml(rec.recommended_action || 'none')}</p>
+      ${rec.missing_information.length ? `<p class="missing"><strong>Missing info:</strong> ${rec.missing_information.map(escapeHtml).join('; ')}</p>` : ''}
+      ${citations ? `<div class="citations"><strong>Cited policy:</strong>${citations}</div>` : ''}
+    `;
+  }
+
+  div.innerHTML = `
+    <div class="case-header">
+      <span class="reason">Case #${c.id} — ${escapeHtml(c.reason)}</span>
+      <span class="status-open">${escapeHtml(c.status)}</span>
+    </div>
+    <p class="evidence">${escapeHtml(JSON.stringify(evidence))}</p>
+    ${recHtml}
+    <div class="actions">
+      <button class="investigate">Investigate</button>
+      <button class="approve">Approve</button>
+      <button class="reject">Reject</button>
+    </div>
+    <div class="result-msg"></div>
+  `;
+
+  const msg = div.querySelector('.result-msg');
+
+  div.querySelector('.investigate').onclick = async () => {
+    msg.textContent = 'Investigating...';
+    try {
+      const res = await fetch(`${agentUrl}/cases/${c.id}/investigate`, { method: 'POST' });
+      if (!res.ok) throw new Error(await res.text());
+      msg.textContent = 'Investigation complete.';
+      load();
+    } catch (e) {
+      msg.textContent = `Investigation failed: ${e.message}`;
+    }
+  };
+
+  div.querySelector('.approve').onclick = async () => {
+    await decide(c.id, 'approve', rec, coreUrl, msg);
+  };
+  div.querySelector('.reject').onclick = async () => {
+    await decide(c.id, 'reject', rec, coreUrl, msg);
+  };
+
+  return div;
+}
+
+// The agent only ever recommends; this button is the one and only place a human's click turns
+// that recommendation into a real API call. Nothing on this page can call /approve by itself.
+async function decide(caseId, kind, rec, coreUrl, msg) {
+  const actor = document.getElementById('actor').value || 'unknown';
+  try {
+    if (kind === 'approve') {
+      const body = { actor };
+      if (rec && rec.recommended_action && rec.recommended_action !== 'none') {
+        body.action = rec.recommended_action;
+      }
+      const res = await fetch(`${coreUrl}/v1/reconciliation-cases/${caseId}/approve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      msg.textContent = 'Approved and resolved.';
+    } else {
+      const note = prompt('Reason for rejecting (required):');
+      if (!note) return;
+      const res = await fetch(`${coreUrl}/v1/reconciliation-cases/${caseId}/dismiss`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ actor, note }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      msg.textContent = 'Dismissed.';
+    }
+    setTimeout(load, 500);
+  } catch (e) {
+    msg.textContent = `Failed: ${e.message}`;
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+}
+
+load();
+</script>
+</body>
+</html>

@@ -4,3 +4,10 @@ payguard/core/config.json
 PLAN.md
 hld.md
 INTERVIEW_NOTES.md
+AGENTIC_LAYER_GUIDE.md
+payguard/agent/.env
+.env
+payguard/agent/.venv/
+payguard/agent/__pycache__/
+payguard/agent/**/__pycache__/
+payguard/agent/.pytest_cache/
