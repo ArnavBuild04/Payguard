@@ -30,6 +30,12 @@ import (
 	paymentrepo "github.com/ArnavBuild04/payguard/core/internal/payment/repo"
 	paymentservice "github.com/ArnavBuild04/payguard/core/internal/payment/service"
 	"github.com/ArnavBuild04/payguard/core/internal/provider"
+	"github.com/ArnavBuild04/payguard/core/internal/reconcile/detector"
+	reconcilehttpapi "github.com/ArnavBuild04/payguard/core/internal/reconcile/httpapi"
+	reconcilemodels "github.com/ArnavBuild04/payguard/core/internal/reconcile/models"
+	reconcilerepo "github.com/ArnavBuild04/payguard/core/internal/reconcile/repo"
+	reconcileservice "github.com/ArnavBuild04/payguard/core/internal/reconcile/service"
+	unmatchedwebhookmodels "github.com/ArnavBuild04/payguard/core/internal/unmatchedwebhook/models"
 	"github.com/ArnavBuild04/payguard/core/internal/wallet/httpapi"
 	"github.com/ArnavBuild04/payguard/core/internal/wallet/models"
 	"github.com/ArnavBuild04/payguard/core/internal/wallet/repo"
@@ -43,6 +49,9 @@ const (
 	topicPaymentEvents = "payment.events"
 	topicPaymentDLQ    = "payment.dlq"
 	dtcConsumerGroup   = "dtc-consumer"
+
+	detectorSweepInterval    = 5 * time.Second
+	autoResolveSweepInterval = 5 * time.Second
 )
 
 func main() {
@@ -70,8 +79,13 @@ func main() {
 		&outboxmodels.Event{},
 		&coordinatormodels.Transaction{},
 		&kafkamodels.ProcessedEvent{},
+		&reconcilemodels.Case{},
+		&unmatchedwebhookmodels.UnmatchedWebhook{},
 	); err != nil {
 		log.Fatalf("failed to auto-migrate models: %v", err)
+	}
+	if err := reconcilerepo.Migrate(db); err != nil {
+		log.Fatalf("failed to create reconciliation indexes: %v", err)
 	}
 
 	cacheClient := cache.New(cfg.Redis.Addr)
@@ -98,9 +112,17 @@ func main() {
 	go outbox.RunRelay(relayCtx, db, cacheClient, kafkaPublishHandler(eventsProducer), 2*time.Second)
 	go pgkafka.RunConsumer(relayCtx, db, cfg.Kafka.Brokers, topicPaymentEvents, dtcConsumerGroup, dlqProducer, dtcEventHandler(coordinatorSvc, paymentSvc))
 
+	reconcileRepo := reconcilerepo.NewRepo(db)
+	det := detector.New(db, providerClient, reconcileRepo)
+	go det.Run(relayCtx, detectorSweepInterval)
+
+	reconcileSvc := reconcileservice.NewService(reconcileRepo, paymentSvc, coordinatorSvc, cfg.Reconcile.AutoResolveCeilingMinor, cfg.Reconcile.MaxAutoAttempts)
+	go reconcileSvc.RunAutoResolver(relayCtx, autoResolveSweepInterval)
+
 	mux := http.NewServeMux()
 	httpapi.RegisterRoutes(mux, svc)
 	paymenthttpapi.RegisterRoutes(mux, paymentSvc)
+	reconcilehttpapi.RegisterRoutes(mux, reconcileSvc)
 
 	srv := &http.Server{
 		Addr:              httpAddr(cfg),

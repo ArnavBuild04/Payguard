@@ -17,4 +17,7 @@ type Service interface {
 
 	// MarkRefunded completes REFUND_PENDING → REFUNDED once every grant has been reversed.
 	MarkRefunded(ctx context.Context, id uint64) error
+
+	// AdvanceFromProvider applies an authoritative provider terminal state via the normal CanTransition-guarded path.
+	AdvanceFromProvider(ctx context.Context, id uint64, to models.Status, providerPaymentID, providerRawStatus string) error
 }

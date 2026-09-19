@@ -13,3 +13,9 @@ type Event struct {
 	PublishedAt   *time.Time `gorm:"column:published_at" json:"published_at,omitempty"`
 	Attempts      int        `gorm:"column:attempts;not null;default:0" json:"attempts"`
 }
+
+// TableName overrides GORM's default pluralized-struct-name convention ("events") — hld.md §3
+// names this table "outbox".
+func (Event) TableName() string {
+	return "outbox"
+}

@@ -23,4 +23,7 @@ type Repo interface {
 
 	// RecordEvent appends to the provider inbox; a duplicate delivery is ErrAlreadyProcessed.
 	RecordEvent(ctx context.Context, evt *models.PaymentEvent) error
+
+	// RecordUnmatchedWebhook logs a provider event that named no payment we have a record of.
+	RecordUnmatchedWebhook(ctx context.Context, source, eventID, payloadJSON string) error
 }

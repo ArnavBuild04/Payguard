@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ArnavBuild04/payguard/core/internal/provider"
 	"github.com/ArnavBuild04/payguard/core/internal/provider/providererr"
@@ -17,6 +18,7 @@ type SimulatedProvider struct {
 	payments      map[string]*provider.Payment
 	unknownStatus map[string]bool
 	nextID        int
+	startedAt     int64
 
 	CreateErr    error
 	GetErr       error
@@ -24,10 +26,13 @@ type SimulatedProvider struct {
 	CreateStatus provider.Status
 }
 
+// New seeds its id generator from the current time, so ids from one test run never collide with
+// ids a prior run may have already persisted to a shared database (see cmd/mockprovider's store).
 func New() *SimulatedProvider {
 	return &SimulatedProvider{
 		payments:      make(map[string]*provider.Payment),
 		unknownStatus: make(map[string]bool),
+		startedAt:     time.Now().UnixNano(),
 	}
 }
 
@@ -46,7 +51,7 @@ func (f *SimulatedProvider) CreatePayment(_ context.Context, req provider.Create
 
 	f.nextID++
 	p := &provider.Payment{
-		ID:          fmt.Sprintf("sim_pay_%d", f.nextID),
+		ID:          fmt.Sprintf("sim_pay_%d_%d", f.startedAt, f.nextID),
 		Status:      status,
 		RawStatus:   string(status),
 		AmountMinor: req.AmountMinor,

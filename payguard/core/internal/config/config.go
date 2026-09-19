@@ -30,6 +30,10 @@ type Config struct {
 	Redis struct {
 		Addr string `json:"addr"`
 	} `json:"redis"`
+	Reconcile struct {
+		AutoResolveCeilingMinor int64 `json:"auto_resolve_ceiling_minor"`
+		MaxAutoAttempts         int   `json:"max_auto_attempts"`
+	} `json:"reconcile"`
 }
 
 func Load(path string) (*Config, error) {

@@ -22,5 +22,9 @@
   },
   "redis": {
     "addr": "localhost:6379"
+  },
+  "reconcile": {
+    "auto_resolve_ceiling_minor": 5000,
+    "max_auto_attempts": 3
   }
 }

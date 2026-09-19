@@ -74,24 +74,58 @@ func (s *serviceImpl) processGrant(ctx context.Context, orderID uint64, tenantID
 		return fmt.Errorf("coordinator: create transaction: %w", err)
 	}
 
+	return s.attemptGrant(ctx, txn, tenantID, userID, amountMinor)
+}
+
+// attemptGrant is the one place that actually calls out to a grant service and records the
+// outcome — used both by the normal fan-out (processGrant) and by RetryGrant's re-armed attempt.
+func (s *serviceImpl) attemptGrant(ctx context.Context, txn *models.Transaction, tenantID string, userID int64, amountMinor int64) error {
 	grantErr := callWithRetry(ctx, func() error {
-		return s.performGrant(ctx, op, tenantID, userID, orderID, amountMinor)
+		return s.performGrant(ctx, txn.OperationType, tenantID, userID, txn.OrderID, amountMinor)
 	})
 
 	if grantErr != nil {
 		if _, tErr := s.repo.Transition(ctx, txn.ID, models.StatusFailed, grantErr.Error()); tErr != nil && !errors.Is(tErr, coordinatorerr.ErrInvalidTransition) {
-			slog.Error("coordinator: failed to record grant failure", "order_id", orderID, "op", op, "err", tErr)
+			slog.Error("coordinator: failed to record grant failure", "order_id", txn.OrderID, "op", txn.OperationType, "err", tErr)
 		}
-		slog.Error("coordinator: grant failed", "order_id", orderID, "op", op, "err", grantErr)
+		slog.Error("coordinator: grant failed", "order_id", txn.OrderID, "op", txn.OperationType, "err", grantErr)
 		return grantErr
 	}
 
 	if _, tErr := s.repo.Transition(ctx, txn.ID, models.StatusSuccess, ""); tErr != nil && !errors.Is(tErr, coordinatorerr.ErrInvalidTransition) {
-		slog.Error("coordinator: failed to record grant success", "order_id", orderID, "op", op, "err", tErr)
+		slog.Error("coordinator: failed to record grant success", "order_id", txn.OrderID, "op", txn.OperationType, "err", tErr)
 		return tErr
 	}
-	slog.Info("coordinator: grant succeeded", "order_id", orderID, "op", op)
+	slog.Info("coordinator: grant succeeded", "order_id", txn.OrderID, "op", txn.OperationType)
 	return nil
+}
+
+// RetryGrant is the only caller allowed to re-arm a FAILED grant — a redelivered Kafka event
+// never does this, only an explicit reconciliation decision.
+func (s *serviceImpl) RetryGrant(ctx context.Context, orderID uint64, op models.OperationType, tenantID string, userID int64, amountMinor int64) error {
+	existing, err := s.repo.GetByOrderAndOp(ctx, orderID, op)
+	if errors.Is(err, coordinatorerr.ErrTransactionNotFound) {
+		return s.processGrant(ctx, orderID, tenantID, userID, op, amountMinor)
+	}
+	if err != nil {
+		return fmt.Errorf("coordinator: look up transaction: %w", err)
+	}
+
+	switch existing.Status {
+	case models.StatusSuccess:
+		slog.Info("coordinator: retry target already succeeded", "order_id", orderID, "op", op)
+		return nil
+	case models.StatusPending:
+		return s.attemptGrant(ctx, existing, tenantID, userID, amountMinor)
+	case models.StatusFailed:
+		reopened, tErr := s.repo.Transition(ctx, existing.ID, models.StatusPending, "")
+		if tErr != nil {
+			return fmt.Errorf("coordinator: reopen failed grant for retry: %w", tErr)
+		}
+		return s.attemptGrant(ctx, reopened, tenantID, userID, amountMinor)
+	default:
+		return fmt.Errorf("coordinator: cannot retry grant in status %s", existing.Status)
+	}
 }
 
 func (s *serviceImpl) performGrant(ctx context.Context, op models.OperationType, tenantID string, userID int64, orderID uint64, amountMinor int64) error {

@@ -9,6 +9,7 @@ import (
 	"github.com/ArnavBuild04/payguard/core/internal/outbox"
 	"github.com/ArnavBuild04/payguard/core/internal/payment/models"
 	"github.com/ArnavBuild04/payguard/core/internal/payment/paymenterr"
+	"github.com/ArnavBuild04/payguard/core/internal/unmatchedwebhook"
 	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -190,6 +191,10 @@ func (r *repoImpl) RecordEvent(ctx context.Context, evt *models.PaymentEvent) er
 		}
 		return err
 	})
+}
+
+func (r *repoImpl) RecordUnmatchedWebhook(ctx context.Context, source, eventID, payloadJSON string) error {
+	return unmatchedwebhook.Record(ctx, r.db, source, eventID, payloadJSON)
 }
 
 func isUniqueViolation(err error, constraint string) bool {

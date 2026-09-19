@@ -104,9 +104,9 @@ func (s *serviceImpl) confirmWithProvider(ctx context.Context, p *models.Payment
 
 	switch result.Status {
 	case provider.StatusSucceeded:
-		s.applyTransition(ctx, p.ID, models.StatusSucceeded, result.ID, result.RawStatus)
+		_ = s.AdvanceFromProvider(ctx, p.ID, models.StatusSucceeded, result.ID, result.RawStatus)
 	case provider.StatusFailed:
-		s.applyTransition(ctx, p.ID, models.StatusFailed, result.ID, result.RawStatus)
+		_ = s.AdvanceFromProvider(ctx, p.ID, models.StatusFailed, result.ID, result.RawStatus)
 	default:
 		// Still processing; attach the reference without changing status.
 		if err := s.repo.SetProviderRef(ctx, p.ID, result.ID, result.RawStatus); err != nil && !errors.Is(err, paymenterr.ErrAlreadyProcessed) {
@@ -127,8 +127,10 @@ func (s *serviceImpl) HandleWebhook(ctx context.Context, source, eventID, eventT
 	payment, err := s.repo.GetByProviderPaymentID(ctx, providerPaymentID)
 	if err != nil {
 		if errors.Is(err, paymenterr.ErrPaymentNotFound) {
-			// Logged loudly rather than silently dropped; there is no unmatched_webhooks table yet.
-			slog.Error("payment: webhook for unknown provider payment id", "provider_payment_id", providerPaymentID, "event_type", eventType)
+			slog.Warn("payment: webhook for unknown provider payment id", "provider_payment_id", providerPaymentID, "event_type", eventType)
+			if recErr := s.repo.RecordUnmatchedWebhook(ctx, source, eventID, payloadJSON); recErr != nil {
+				slog.Error("payment: failed to record unmatched webhook", "err", recErr)
+			}
 			return nil
 		}
 		return fmt.Errorf("payment: look up webhook target: %w", err)
@@ -181,18 +183,22 @@ func (s *serviceImpl) MarkRefunded(ctx context.Context, id uint64) error {
 	return err
 }
 
-func (s *serviceImpl) applyTransition(ctx context.Context, id uint64, to models.Status, providerPaymentID, providerRawStatus string) {
+func (s *serviceImpl) AdvanceFromProvider(ctx context.Context, id uint64, to models.Status, providerPaymentID, providerRawStatus string) error {
 	_, err := s.repo.Transition(ctx, id, to, providerPaymentID, providerRawStatus)
 	s.cache.InvalidatePayment(ctx, id)
 	switch {
 	case err == nil:
 		slog.Info("payment: transitioned", "payment_id", id, "to", to)
+		return nil
 	case errors.Is(err, paymenterr.ErrInvalidTransition):
 		// Out-of-order or duplicate — expected under at-least-once delivery, not a bug.
 		slog.Info("payment: transition rejected as out-of-order", "payment_id", id, "to", to)
+		return nil
 	case errors.Is(err, paymenterr.ErrAlreadyProcessed):
 		slog.Info("payment: provider reference already recorded", "payment_id", id)
+		return nil
 	default:
 		slog.Error("payment: transition failed", "payment_id", id, "to", to, "err", err)
+		return err
 	}
 }
