@@ -34,6 +34,9 @@ type Config struct {
 		AutoResolveCeilingMinor int64 `json:"auto_resolve_ceiling_minor"`
 		MaxAutoAttempts         int   `json:"max_auto_attempts"`
 	} `json:"reconcile"`
+	Policy struct {
+		MaxCompensateMinor int64 `json:"max_compensate_minor"`
+	} `json:"policy"`
 }
 
 func Load(path string) (*Config, error) {

@@ -19,6 +19,10 @@ var (
 
 	ErrUnknownAction = errors.New("unknown resolution action")
 
+	// ErrPolicyDenied fires when the deterministic policy engine rejects a proposed resolution —
+	// the LLM may propose and cite, but only policy.Engine decides permitted/denied.
+	ErrPolicyDenied = errors.New("resolution denied by policy")
+
 	// ErrNoteRequired fires on a dismiss with no note — no money moved, so the reasoning must be on record.
 	ErrNoteRequired = errors.New("a note is required to dismiss a case")
 )

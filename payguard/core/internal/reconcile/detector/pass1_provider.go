@@ -75,10 +75,15 @@ func (d *Detector) checkProcessingPayment(ctx context.Context, p paymentmodels.P
 		}
 
 	case errors.Is(err, providererr.ErrUnknownStatus):
+		raw := ""
+		var use *providererr.UnknownStatusError
+		if errors.As(err, &use) {
+			raw = use.Raw
+		}
 		d.openCase(ctx, &pid, models.ReasonUnknownProviderState, "", models.Evidence{
 			TenantID: p.TenantID, UserID: p.UserID, SKU: p.SKU, AmountMinor: p.AmountMinor,
 			LocalStatus: string(p.Status), ProviderPaymentID: *p.ProviderPaymentID,
-			AgeSeconds: int64(age.Seconds()),
+			ProviderStatus: raw, AgeSeconds: int64(age.Seconds()),
 		})
 
 	default:
